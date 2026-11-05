@@ -6,6 +6,11 @@ The effect is a vibrato/chorus. Its short delay wanders to random times at rando
 LFO. The delayed signal then goes through a resonant low-pass with drive. The plugin has its own screen: a puddle
 under the moon that reacts to the knobs and the sound.
 
+![The puddle screen: RATE and DEPTH on the left, LPF and MIX on the right, the puddle with ripples and the moon in the middle](docs/screen.png)
+
+*The screen as drawn by `preview/screen.html` with the default settings. The browser preview has its own font, so the
+real OP-1 text will look different.*
+
 | knob | name | press |
 |---|---|---|
 | blue | RATE | DAMP |
