@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>puddle screen</title>
+<style>
+  :root { --bg: #c9cad3; --panel: #111117; --ink: #222; }
+  body { margin: 0; background: var(--bg); font: 14px/1.4 "Helvetica Neue", Helvetica, Arial, sans-serif; color: var(--ink); }
+  main { max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-weight: 300; font-size: 28px; margin: 0 0 16px; }
+  .screen { background: var(--panel); border-radius: 10px; padding: 12px; display: inline-block; max-width: 100%; box-sizing: border-box; }
+  canvas { display: block; width: 960px; max-width: 100%; height: auto; image-rendering: auto; }
+  .controls { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 24px; margin-top: 18px; }
+  label { display: flex; flex-direction: column; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  input[type=range] { width: 100%; }
+  .note { font-size: 12px; color: #444; margin-top: 16px; max-width: 760px; }
+  button { margin-top: 12px; padding: 6px 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>puddle</h1>
+  <div class="screen"><canvas id="c" width="960" height="480"></canvas></div>
+  <div class="controls">
+    <label style="color:#4a63d8">rate (blue) <input id="rate" type="range" min="0" max="99" value="30"></label>
+    <label style="color:#0a9a62">depth (green) <input id="depth" type="range" min="0" max="99" value="45"></label>
+    <label>filter (white, 99 open) <input id="filter" type="range" min="0" max="99" value="80"></label>
+    <label style="color:#d23a33">mix (orange) <input id="mix" type="range" min="0" max="99" value="99"></label>
+    <label style="color:#4a63d8">damp (blue, press) <input id="damp" type="range" min="0" max="99" value="40"></label>
+    <label>res (white, press) <input id="res" type="range" min="0" max="99" value="20"></label>
+    <label><span><input id="p2b" type="checkbox"> blue page 2</span></label>
+    <label><span><input id="p2w" type="checkbox"> white page 2</span></label>
+    <label><span><input id="art" type="checkbox"> solo artwork</span></label>
+  </div>
+  <p class="note">Browser mock-up of the screen, 320×160 scaled 3×, with a simulated input (one plucked note every 0.75 s) and the plugin's modulation laws. Same geometry, colours and laws as puddle_scene.c (0.9.2). The OP-1 draws it with its own renderer and font: thickness, glyphs and colours on the OLED will differ slightly.</p>
+</main>
+<script>
+const W = 320, H = 160, S = 3, LIFT = 12;
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+const $ = id => document.getElementById(id);
+const col = { blue: [107,142,255], green: [0,239,148], white: [255,255,255], red: [255,65,57] };
+const rgba = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+
+// DSP-like state, advanced in 64-sample blocks at 22.05 kHz
+const BLOCK_S = 64 / 22050;
+let rng = 0x2545F491, hold = 0, countdown = 0, s1 = 0, s2 = 0, events = 0;
+let env = 0, ref = 64, level = 0, blocks = 0, t = 0;
+const rnd = () => { rng ^= rng << 13; rng >>>= 0; rng ^= rng >>> 17; rng ^= rng << 5; rng >>>= 0; return rng; };
+const meanInterval = r => 441 * Math.pow(2, 6.64 * (1 - r));
+const dampA = d => Math.max(4, 371 * Math.pow(2, -7.3 * d)) / 32768;
+const ripples = [];
+
+function stepBlock(k) {
+  const mean = meanInterval(k.rate), a = dampA(k.damp);
+  // input: plucked note every 0.75 s, exponential decay
+  const tn = t % 0.75, pk = 20000 * Math.exp(-tn / 0.35);
+  if (pk > env) env = pk; else env -= (env - pk) * 1003 / 32768;        // about 90 ms
+  if (env > ref) ref = env; else ref -= ref * 32 / 32768;
+  if (ref < 64) ref = 64;
+  level = Math.min(1, env / ref);
+  for (let i = 0; i < 64; i++) {
+    if (--countdown <= 0) {
+      hold = ((rnd() >>> 16) << 16 >> 16) / 32768;
+      countdown = mean / 2 + (rnd() % Math.max(1, Math.floor(mean)));
+      events++;
+      ripples.push({ x: hold, born: blocks });
+      if (ripples.length > 6) ripples.shift();
+    }
+    s1 += (hold - s1) * a; s2 += (s1 - s2) * a;
+  }
+  blocks++; t += BLOCK_S;
+}
+
+function line(x0, y0, x1, y1, c, a = 1, w = 1) {
+  g.strokeStyle = rgba(c, a); g.lineWidth = w * S;
+  g.beginPath(); g.moveTo(x0 * S, (y0 - LIFT) * S); g.lineTo(x1 * S, (y1 - LIFT) * S); g.stroke();
+}
+function ellipse(cx, cy, rx, ry, c, a, n = 24, w = 1) {
+  let px = cx + rx, py = cy;
+  for (let i = 1; i <= n; i++) {
+    const ph = i / n * Math.PI * 2, x = cx + Math.cos(ph) * rx, y = cy + Math.sin(ph) * ry;
+    line(px, py, x, y, c, a, w); px = x; py = y;
+  }
+}
+// Monoline stroke font in the style of the stock screens. Glyphs in units of the cap height (y down).
+// The stock font maps lowercase ASCII to these letters; the OP-1 draws its own glyphs natively.
+const arc = (cx, cy, rx, ry, a0, a1, n = Math.max(6, Math.round(Math.abs(a1 - a0) / 8))) => Array.from({ length: n + 1 }, (_, i) => {
+  const a = (a0 + (a1 - a0) * i / n) * Math.PI / 180; return [cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]; });
+const GL = {
+  '0': [0.56, [[[0, 0.72], [0, 0.28], ...arc(0.28, 0.28, 0.28, 0.28, 180, 360), [0.56, 0.72], ...arc(0.28, 0.72, 0.28, 0.28, 0, 180)]]],
+  '1': [0.36, [[[0.06, 0.18], [0.36, 0], [0.36, 1]]]],
+  '2': [0.56, [[...arc(0.28, 0.27, 0.27, 0.27, 195, 395), [0, 1], [0.56, 1]]]],
+  '3': [0.56, [[...arc(0.27, 0.25, 0.27, 0.25, 200, 450), ...arc(0.28, 0.74, 0.28, 0.26, 270, 520)]]],
+  '4': [0.58, [[[0.42, 1], [0.42, 0], [0, 0.7], [0.58, 0.7]]]],
+  '5': [0.56, [[[0.52, 0], [0.06, 0], [0.03, 0.46], ...arc(0.28, 0.69, 0.28, 0.31, 220, 520)]]],
+  '6': [0.56, [[...arc(0.56, 0.7, 0.56, 0.7, 250, 180), ...arc(0.28, 0.7, 0.28, 0.3, 180, 540)]]],
+  '7': [0.56, [[[0, 0], [0.56, 0], [0.16, 1]]]],
+  '8': [0.56, [arc(0.28, 0.25, 0.25, 0.25, 90, 450), arc(0.28, 0.73, 0.28, 0.27, 270, 630)]],
+  '9': [0.56, [[...arc(0.28, 0.3, 0.28, 0.3, 0, 360), ...arc(0, 0.3, 0.56, 0.7, 0, 70)]]],
+  A: [0.58, [[[0, 1], [0.29, 0], [0.58, 1]], [[0.1, 0.66], [0.48, 0.66]]]],
+  D: [0.56, [[[0, 0], [0.28, 0], ...arc(0.28, 0.3, 0.28, 0.3, 270, 360), [0.56, 0.7], ...arc(0.28, 0.7, 0.28, 0.3, 0, 90), [0, 1], [0, 0]]]],
+  E: [0.5, [[[0.5, 0], [0, 0], [0, 1], [0.5, 1]], [[0, 0.48], [0.42, 0.48]]]],
+  F: [0.5, [[[0.5, 0], [0, 0], [0, 1]], [[0, 0.48], [0.42, 0.48]]]],
+  G: [0.56, [[...arc(0.28, 0.28, 0.28, 0.28, 345, 180), [0, 0.72], ...arc(0.28, 0.72, 0.28, 0.28, 180, 0), [0.56, 0.52], [0.3, 0.52]]]],
+  H: [0.56, [[[0, 0], [0, 1]], [[0.56, 0], [0.56, 1]], [[0, 0.48], [0.56, 0.48]]]],
+  I: [0, [[[0, 0], [0, 1]]]],
+  L: [0.48, [[[0, 0], [0, 1], [0.48, 1]]]],
+  M: [0.68, [[[0, 1], [0, 0], [0.34, 0.64], [0.68, 0], [0.68, 1]]]],
+  N: [0.56, [[[0, 1], [0, 0], [0.56, 1], [0.56, 0]]]],
+  O: [0.58, [[[0, 0.71], [0, 0.29], ...arc(0.29, 0.29, 0.29, 0.29, 180, 360), [0.58, 0.71], ...arc(0.29, 0.71, 0.29, 0.29, 0, 180)]]],
+  P: [0.54, [[[0, 1], [0, 0], [0.28, 0], ...arc(0.28, 0.25, 0.26, 0.25, 270, 450), [0, 0.5]]]],
+  R: [0.56, [[[0, 1], [0, 0], [0.28, 0], ...arc(0.28, 0.25, 0.26, 0.25, 270, 450), [0, 0.5]], [[0.26, 0.5], [0.56, 1]]]],
+  S: [0.56, [[...arc(0.28, 0.26, 0.27, 0.26, 330, 120), ...arc(0.28, 0.74, 0.28, 0.26, 300, 510)]]],
+  T: [0.56, [[[0, 0], [0.56, 0]], [[0.28, 0], [0.28, 1]]]],
+  X: [0.56, [[[0, 0], [0.56, 1]], [[0.56, 0], [0, 1]]]],
+};
+// size as in op1_text_ctor: 14 for labels, 40 for readouts; returns the drawn width in pixels
+function text(x, y, size, str, c, measure = false) {
+  const h = size >= 30 ? 37 : 10.5, gap = size >= 30 ? 0.24 : 0.3;
+  g.strokeStyle = rgba(c); g.lineWidth = (size >= 30 ? 1.1 : 1.0) * S; g.lineJoin = g.lineCap = 'round';
+  let cx = x;
+  for (const ch of str.toUpperCase()) {
+    if (ch === ' ') { cx += 0.45 * h; continue; }
+    const [w, strokes] = GL[ch];
+    if (!measure) for (const st of strokes) {
+      g.beginPath();
+      st.forEach(([u, v], i) => (i ? g.lineTo : g.moveTo).call(g, (cx + u * h) * S, (y - LIFT + v * h) * S));
+      g.stroke();
+    }
+    cx += (w + gap) * h;
+  }
+  return cx - x - gap * h;
+}
+const pct = v => String(Math.round(v * 99));
+
+// one seeded value per ripple, for the drop's slight offset on the surface
+const hash = n => { let x = (n * 2654435761) >>> 0; x ^= x >>> 15; return (x % 1000) / 1000; };
+let wob = 0, prevS2 = 0, vel = 0;
+
+function draw(k, p2b, p2w, art) {
+  g.fillStyle = '#000'; g.fillRect(0, 0, W * S, H * S);
+  const CX = 160, CY = 106;
+  // DEPTH: the puddle's size, nothing else
+  const rx = 1.15 * (34 + 28 * k.depth), ry = 1.15 * (9 + 10 * k.depth);
+  // DAMP: how the water moves. Low damp: a jittery rim with many lobes; high damp: a slow, soft swell
+  vel += (Math.abs(s2 - prevS2) * 60 - vel) * 0.3; prevS2 = s2;
+  const lobes = Math.round(2 + 6 * (1 - k.damp)), wamp = Math.min(2.2, 0.25 + vel * (3 - 2 * k.damp));
+  wob += 0.02 + 0.12 * (1 - k.damp);
+  const dry = k.mix < 0.02;
+  // MIX: the rim, dashed at 0, else solid and brightening with MIX
+  const N = 48; let px, py;
+  for (let i = 0; i <= N; i++) {
+    const ph = i / N * Math.PI * 2;
+    const rr = wamp * Math.sin(lobes * ph + wob) + wamp * 0.5 * Math.sin((lobes + 3) * ph - wob * 1.7);
+    const x = CX + Math.cos(ph) * (rx + rr), y = CY + Math.sin(ph) * (ry + rr * ry / rx);
+    if (i && (!dry || i % 2)) line(px, py, x, y, col.blue, dry ? 1 : 0.2 + 0.8 * k.mix);
+    px = x; py = y;
+  }
+  // FILTER: a white moon, 99 open .. 0 closed. Small, high and a little to the left when open; big, low and to the
+  // right when closed. A ring and the curve of its shadow (a crescent lit on the left), full white, 1.25 px.
+  // It trembles with the drive: up to 1.5 px fully closed, from 30 % to all of it as sound comes in, at about 9 and 13 Hz.
+  const cl = 1 - k.filter, MX = 176 + 16 * cl, MY = 32 + 30 * cl, mr = 1.15 * (7 + 8 * cl);
+  const shake = 1.5 * cl * cl * (0.3 + 0.7 * level);
+  const mx0 = MX + shake * Math.sin(blocks * 2 * Math.PI * 9 / 344.53), my0 = MY + 0.6 * shake * Math.sin(blocks * 2 * Math.PI * 13 / 344.53 + Math.PI / 2);
+  ellipse(mx0, my0, mr, mr, col.white, 1, 24, 1.25);
+  { let qx = mx0, qy = my0 - mr;
+    for (let i = 1; i <= 10; i++) { const a = (270 - i * 18) * Math.PI / 180, x = mx0 + Math.cos(a) * mr * 0.45, y = my0 + Math.sin(a) * mr;
+      line(qx, qy, x, y, col.white, 1, 1.25); qx = x; qy = y; } }
+  if (!dry) for (let j = 0; j < 3; j++) {
+    const yy = CY - ry * 0.55 + j * 3.2, hw = mr * (1 - j * 0.3), sx = MX + Math.sin(wob + j * 1.3) * wamp;
+    line(sx - hw, yy, sx + hw, yy, col.white, 1, 1.25);
+  }
+  // RATE: rain. Each random target is a drop that falls, then a ripple where it landed; DAMP sets how long it lasts
+  const spread = rx * 0.62, life = 140 + k.damp * 620, fall = 36;
+  for (const r of ripples) {
+    const age = blocks - r.born, x = CX + r.x * spread, y = CY + (hash(r.born) - 0.5) * ry * 0.5;
+    if (age < fall) { const f = age / fall, y0 = 20 + f * (y - 20); line(x, y0 - 6, x, y0, col.blue, 0.9); continue; }
+    if (dry) continue;
+    const f = (age - fall) / life; if (f >= 1) continue;
+    const rad = 2 + f * rx * 0.42, a = 1 - f;
+    ellipse(x, y, rad, rad * ry / rx, col.blue, a, 16);
+    if (rad > 6) ellipse(x, y, rad * 0.55, rad * 0.55 * ry / rx, col.blue, a * 0.6, 10);
+  }
+  if (art) return;
+  // corner text as the stock FX screens: labels in the encoder colours (blue, green, white, orange), readouts white;
+  // right column: labels left-aligned on its left edge (x 255), readouts right-aligned on x 306.
+  // Pressed pages: blue shows DAMP, white shows RES.
+  const R = 306, RCOL = 255, right = (y, size, str, c) => text(R - text(0, y, size, str, c, true), y, size, str, c);
+  text(14, 16, 14, p2b ? 'damp' : 'rate', col.blue);
+  text(14, 34, 40, pct(p2b ? k.damp : k.rate), col.white);
+  text(14, 92, 14, 'depth', col.green);
+  text(14, 110, 40, pct(k.depth), col.white);
+  text(RCOL, 16, 14, p2w ? 'res' : 'lpf', col.white);
+  right(34, 40, pct(p2w ? k.res : k.filter), col.white);
+  text(RCOL, 92, 14, 'mix', col.red);
+  right(110, 40, pct(k.mix), col.white);
+}
+
+let last = performance.now(), acc = 0;
+function frame(now) {
+  const k = {}; for (const id of ['rate', 'depth', 'filter', 'mix', 'damp', 'res']) k[id] = +$(id).value / 99;
+  acc += Math.min(0.1, (now - last) / 1000); last = now;
+  while (acc >= BLOCK_S) { stepBlock(k); acc -= BLOCK_S; }
+  draw(k, $('p2b').checked, $('p2w').checked, $('art').checked);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

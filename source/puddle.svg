@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160" viewBox="0 0 320 160">
+<!-- puddle: no static art; the whole scene is drawn in puddle_scene.c. One black dot keeps the document non-empty. Original, GPL-3.0-or-later with the OP-1 firmware permission. -->
+<path fill="#000000" d="M0 159L1 159L1 160L0 160Z"/>
+</svg>

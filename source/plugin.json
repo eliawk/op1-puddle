@@ -1,0 +1,32 @@
+{
+  "name": "puddle",
+  "kind": "fx",
+  "order": 0,
+  "symbol": "FX_puddle",
+  "stereo": true,
+  "sources": [
+    "puddle.c",
+    "puddle_dsp.c",
+    "puddle_scene.c",
+    "puddle_screen.c"
+  ],
+  "defaults": [
+    9830,
+    14746,
+    26214,
+    32767
+  ],
+  "page2_defaults": [
+    13107,
+    0,
+    6554
+  ],
+  "screen": {
+    "svg": "puddle.svg",
+    "symbol": "SCREEN_puddle"
+  },
+  "loadable": true,
+  "claims": [],
+  "author": "piramid",
+  "version": "0.9.2"
+}
